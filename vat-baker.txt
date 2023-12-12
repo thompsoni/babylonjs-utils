@@ -1,0 +1,196 @@
+
+
+var createScene = function () {
+    // This creates a basic Babylon Scene object (non-mesh)
+    var scene = new BABYLON.Scene(engine);
+
+    // This creates and positions a free camera (non-mesh)
+    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 25, -20), scene);
+
+    // This targets the camera to scene origin
+    camera.setTarget(BABYLON.Vector3.Zero());
+
+    // This attaches the camera to the canvas
+    camera.attachControl(canvas, true);
+
+    // This creates a light, aiming 0,1,0 - to the sky (non-mesh)
+    var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+
+    // Default intensity is 1. Let's dim the light a small amount
+    light.intensity = 200.7;
+
+    //
+    // Settings
+    //
+
+    const PLANE_SIZE = 20;
+
+    // Our built-in 'ground' shape.
+    var ground = BABYLON.MeshBuilder.CreateGround("ground", { width: PLANE_SIZE + 1, height: PLANE_SIZE + 1 }, scene);
+
+    addModels(scene);
+
+    return scene;
+};
+
+//ASSET from https://quaternius.com/packs/ultimatemodularcharacters.html
+
+async function addModels(scene) {
+    const PLANE_SIZE = 20;
+    const INST_COUNT = 100; // how many instances
+    const PICKED_ANIMS = ['walk', 'run', 'idle', 'jump', 'pickaxe'];
+
+    const { meshes, animationGroups, skeletons } = await BABYLON.SceneLoader.ImportMeshAsync(
+        '',
+        'https://raw.githubusercontent.com/thompsoni/babylonjs-utils/master/robot.glb',
+        '',
+        scene);
+
+    animationGroups.forEach(ag => ag.stop());
+
+    //const selectedAnimationGroups = animationGroups.filter(ag => PICKED_ANIMS.includes(ag.name));
+    const selectedAnimationGroups = animationGroups;
+
+    const skeleton = skeletons[0];
+    const root = meshes[0];
+    const meshesFiltered = meshes.filter((m) => m.geometry);
+
+    // set parents to null, otherwise will mangle the animations when merging
+    meshesFiltered.forEach(mesh => {
+        mesh.parent = null;
+    })
+
+    const merged = BABYLON.Mesh.MergeMeshes(meshesFiltered, true, true, undefined, undefined, true);
+    merged.skeleton = skeletons[0].clone('ff');
+
+    /*root.position.setAll(0);
+    root.scaling.setAll(1);
+    root.rotationQuaternion = null;
+    root.rotation.setAll(0);
+
+    const merged = merge(root, skeleton);
+
+    root.setEnabled(false);*/
+
+    merged.registerInstancedBuffer('bakedVertexAnimationSettingsInstanced', 4);
+    merged.instancedBuffers.bakedVertexAnimationSettingsInstanced = new BABYLON.Vector4(0, 0, 0, 0);
+
+    const ranges = calculateRanges(selectedAnimationGroups);
+    console.warn('r', ranges)
+
+    const setAnimationParameters = (
+        vec,
+        animIndex = Math.floor(Math.random() * selectedAnimationGroups.length)
+    ) => {
+        const anim = ranges[animIndex];
+        const from = Math.floor(anim.from);
+        const to = Math.floor(anim.to);
+        const ofst = Math.floor(Math.random() * (to - from - 1));
+        vec.set(from, to - 1, 0, 60);
+    };
+
+    const b = new BABYLON.VertexAnimationBaker(scene, merged);
+    const manager = new BABYLON.BakedVertexAnimationManager(scene);
+    merged.bakedVertexAnimationManager = manager;
+    merged.instancedBuffers.bakedVertexAnimationSettingsInstanced = new BABYLON.Vector4(0, 0, 0, 0);
+    setAnimationParameters(merged.instancedBuffers.bakedVertexAnimationSettingsInstanced, 0);
+
+    const bufferFromMesh = await bakeVertexData(merged, selectedAnimationGroups);
+
+    const buffer = bufferFromMesh;
+
+    manager.texture = b.textureFromBakedVertexData(buffer);
+
+    const vertexDataJSON = b.serializeBakedVertexDataToJSON(buffer);
+    let a = document.createElement('a');
+    a.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(vertexDataJSON));
+    a.setAttribute('download', 'vertexData.json');
+    a.click();
+
+    const createInst = (id, animIndex) => {
+        const instance = merged.createInstance('instance_' + id);
+        instance.instancedBuffers.bakedVertexAnimationSettingsInstanced = new BABYLON.Vector4(0, 0, 0, 0);
+        setAnimationParameters(instance.instancedBuffers.bakedVertexAnimationSettingsInstanced, animIndex);
+        instance.position.x = Math.random() * PLANE_SIZE - PLANE_SIZE / 2;
+        instance.position.z = Math.random() * PLANE_SIZE - PLANE_SIZE / 2;
+        instance.rotation.y = Math.random() * Math.PI * 2;
+        return instance;
+    };
+
+    for (let i = 0; i < INST_COUNT; i++) {
+        createInst(i + '');
+    }
+
+    scene.registerBeforeRender(() => {
+        manager.time += scene.getEngine().getDeltaTime() / 1000.0;
+    });
+
+
+    //dispose resources
+    meshes.forEach(m => m.dispose(false, true));
+    animationGroups.forEach(ag => ag.dispose());
+    skeletons.forEach(s => s.dispose());
+}
+
+function merge(mesh, skeleton) {
+    // pick what you want to merge
+    const allChildMeshes = mesh.getChildTransformNodes(true)[0].getChildMeshes(false);
+
+    // Ignore Backpack because pf different attributes 
+    // https://forum.babylonjs.com/t/error-during-merging-meshes-from-imported-glb/23483
+    const childMeshes = allChildMeshes.filter(m => m.geometry)
+
+    // multiMaterial = true
+    const merged = BABYLON.Mesh.MergeMeshes(childMeshes, false, true, undefined, undefined, true);
+    merged.name = '_MergedModel';
+    merged.skeleton = skeleton;
+
+    return merged;
+}
+
+function calculateRanges(animationGroups) {
+    return animationGroups.reduce((acc, ag, index) => {
+        if (index === 0) {
+            acc.push({ from: Math.floor(ag.from), to: Math.floor(ag.to) });
+        } else {
+            const prev = acc[index - 1];
+
+            acc.push({ from: prev.to + 1, to: prev.to + 1 + Math.floor(ag.to) });
+        }
+        return acc;
+    }, []);
+}
+
+async function bakeVertexData(mesh, ags) {
+    const s = mesh.skeleton;
+    const boneCount = s.bones.length;
+    /** total number of frames in our animations */
+    const frameCount = ags.reduce((acc, ag) => acc + (Math.floor(ag.to) - Math.floor(ag.from)) + 1, 0);
+
+    // reset our loop data
+    let textureIndex = 0;
+    const textureSize = (boneCount + 1) * 4 * 4 * frameCount;
+    const vertexData = new Float32Array(textureSize);
+
+    function* captureFrame() {
+        const skeletonMatrices = s.getTransformMatrices(mesh);
+        vertexData.set(skeletonMatrices, textureIndex * skeletonMatrices.length);
+    }
+
+    for (const ag of ags) {
+        ag.reset();
+        const from = Math.floor(ag.from);
+        const to = Math.floor(ag.to);
+        for (let frameIndex = from; frameIndex <= to; frameIndex++) {
+            // start anim for one frame
+            ag.start(false, 1, frameIndex, frameIndex, false);
+            // wait for finishing
+            await ag.onAnimationEndObservable.runCoroutineAsync(captureFrame());
+            textureIndex++;
+            // stop anim
+            ag.stop();
+        }
+    }
+
+    return vertexData;
+}
